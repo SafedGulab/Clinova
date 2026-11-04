@@ -1,0 +1,221 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  PATIENT
+  ADMIN
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum OtpPurpose {
+  VERIFY_EMAIL
+  PASSWORD_RESET
+}
+
+model User {
+  id              String    @id @default(cuid())
+  name            String
+  email           String    @unique // always stored normalized (trimmed, lowercase)
+  passwordHash    String
+  role            Role      @default(PATIENT)
+  emailVerifiedAt DateTime? // null = pending registration
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions     Session[]
+  otps         OtpVerification[]
+  appointments Appointment[]
+  intakes      PatientIntake[]
+  auditLogs    AuditLog[]
+
+  @@index([role])
+  @@index([createdAt])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique // SHA-256 of the cookie token; raw token is never stored
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model OtpVerification {
+  id            String     @id @default(cuid())
+  userId        String
+  purpose       OtpPurpose
+  codeHash      String // hash of the 6-digit code; the code itself is never stored
+  expiresAt     DateTime
+  attempts      Int        @default(0)
+  consumedAt    DateTime?
+  invalidatedAt DateTime? // set when a newer OTP replaces this one
+  createdAt     DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, createdAt])
+}
+
+// DB-backed counters so rate limiting works across serverless invocations.
+model RateLimit {
+  key       String   @id // e.g. "login:ip:1.2.3.4" or "otp-resend:user:<id>"
+  count     Int      @default(0)
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
+}
+
+model Specialty {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique
+  description String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  doctors Doctor[]
+}
+
+model Doctor {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  name            String
+  specialtyId     String
+  qualification   String
+  experienceYears Int
+  consultationFee Int // whole currency units; currency label comes from ClinicSettings
+  bio             String
+  isActive        Boolean  @default(true)
+  isSample        Boolean  @default(true) // true = fictional demonstration profile
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  specialty    Specialty            @relation(fields: [specialtyId], references: [id], onDelete: Restrict)
+  availability DoctorAvailability[]
+  appointments Appointment[]
+
+  @@index([specialtyId, isActive])
+  @@index([name])
+}
+
+model DoctorAvailability {
+  id          String @id @default(cuid())
+  doctorId    String
+  dayOfWeek   Int // 0 = Sunday ... 6 = Saturday, in the clinic timezone
+  startMinute Int // minutes after local midnight, e.g. 540 = 09:00
+  endMinute   Int
+
+  doctor Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@unique([doctorId, dayOfWeek, startMinute])
+  @@index([doctorId])
+}
+
+model Appointment {
+  id          String            @id @default(cuid())
+  reference   String            @unique // human-friendly, e.g. CLN-7K2M9Q
+  patientId   String
+  doctorId    String
+  startsAt    DateTime // stored as UTC
+  endsAt      DateTime
+  status      AppointmentStatus @default(PENDING)
+  cancelledAt DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  patient User           @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor  Doctor         @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  intake  PatientIntake?
+
+  @@index([patientId, startsAt])
+  @@index([doctorId, startsAt])
+  @@index([status, startsAt])
+  // Overlap protection (partial exclusion constraint) cannot be expressed in Prisma.
+  // See prisma/manual/appointment_no_overlap.sql and the README.
+}
+
+model PatientIntake {
+  id                    String   @id @default(cuid())
+  appointmentId         String   @unique
+  patientId             String
+  fullName              String
+  dateOfBirth           DateTime @db.Date
+  phone                 String
+  reasonForVisit        String
+  medicalHistory        String? // optional
+  currentMedications    String? // optional
+  allergies             String? // optional
+  emergencyContactName  String
+  emergencyContactPhone String
+  consentGivenAt        DateTime
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  patient     User        @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  @@index([patientId])
+}
+
+model ContactMessage {
+  id        String    @id @default(cuid())
+  name      String
+  email     String
+  subject   String
+  message   String
+  createdAt DateTime  @default(now())
+  handledAt DateTime?
+
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String // e.g. "appointment.status_changed"
+  entityType String
+  entityId   String
+  metadata   Json? // never put intake or medical content here
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+}
+
+// Single-row table (id is always 1).
+model ClinicSettings {
+  id             Int      @id @default(1)
+  clinicName     String   @default("Clinova Demo Clinic")
+  contactEmail   String
+  contactPhone   String
+  address        String
+  timezone       String   @default("Asia/Kolkata")
+  currency       String   @default("INR")
+  slotMinutes    Int      @default(30)
+  openMinute     Int      @default(540) // 09:00
+  closeMinute    Int      @default(1020) // 17:00
+  maxAdvanceDays Int      @default(60)
+  updatedAt      DateTime @updatedAt
+}
