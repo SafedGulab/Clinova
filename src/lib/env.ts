@@ -10,6 +10,9 @@ const schema = z.object({
   BREVO_SENDER_EMAIL: z.string().email().optional(),
   BREVO_SENDER_NAME: z.string().optional(),
   ADMIN_SETUP_SECRET: z.string().optional(),
+  // Required only when the AI specialty suggester is actually called; the AI module must fail loudly if missing.
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default("gpt-4o-mini"),
 });
 
 let cached: z.infer<typeof schema> | undefined;

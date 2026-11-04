@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { BookingWizard } from "@/components/booking-wizard";
 import { SiteShell } from "@/components/site-shell";
+import { isSuggesterEnabled } from "@/lib/ai/suggest-specialty";
 import { getCurrentUser } from "@/lib/auth/session";
 import { getSettings } from "@/lib/clinic";
 import { db } from "@/lib/db";
@@ -34,6 +35,7 @@ export default async function BookPage({ searchParams }: { searchParams: Promise
         maxDate={addDays(today, s.maxAdvanceDays)}
         currency={s.currency}
         defaultName={user.name}
+        aiSuggestEnabled={isSuggesterEnabled()}
       />
     </SiteShell>
   );

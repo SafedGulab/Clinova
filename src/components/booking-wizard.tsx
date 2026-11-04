@@ -12,6 +12,7 @@ type Intake = {
 type Props = {
   specialties: Spec[]; doctors: Doc[]; initialSpecialtyId?: string; initialDoctorId?: string;
   minDate: string; maxDate: string; currency: string; defaultName: string;
+  aiSuggestEnabled: boolean;
 };
 
 const input = "w-full rounded-xl border border-slate-300 px-3 py-2 text-navy outline-none focus:border-teal focus:ring-2 focus:ring-teal/30";
@@ -44,6 +45,9 @@ export function BookingWizard(props: Props) {
   const [consent, setConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [symptoms, setSymptoms] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestion, setSuggestion] = useState<{ specialtyId: string | null; reason: string } | null>(null);
 
   const money = new Intl.NumberFormat("en-IN", { style: "currency", currency: props.currency, maximumFractionDigits: 0 });
   const doctor = props.doctors.find((d) => d.id === doctorId);
@@ -63,6 +67,39 @@ export function BookingWizard(props: Props) {
   }, [doctorId, date, reloadKey]);
 
   function next(to: number) { setError(null); setStep(to); }
+
+  async function requestSuggestion() {
+    if (symptoms.trim().length < 3) return setError("Please describe your symptoms in a sentence or two.");
+    setSuggesting(true);
+    setError(null);
+    setSuggestion(null);
+    try {
+      const res = await fetch("/api/ai/suggest-specialty", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symptoms: symptoms.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        setSuggestion({ specialtyId: data.specialtyId ?? null, reason: data.reason ?? "" });
+      } else {
+        setError(data?.error?.message ?? "Could not get a suggestion right now. Please pick a service manually.");
+      }
+    } catch {
+      setError("Network error. Please pick a service manually.");
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  function acceptSuggestion() {
+    if (!suggestion?.specialtyId) return;
+    const picked = props.specialties.find((s) => s.id === suggestion.specialtyId);
+    if (!picked) return;
+    if (picked.id !== specialtyId) { setDoctorId(""); setDate(""); setSlot(null); }
+    setSpecialtyId(picked.id);
+    next(2);
+  }
 
   function checkIntake() {
     const required: (keyof Intake)[] = ["fullName", "dateOfBirth", "phone", "reasonForVisit", "emergencyContactName", "emergencyContactPhone"];
@@ -106,6 +143,40 @@ export function BookingWizard(props: Props) {
       <p className="mt-1 text-xs text-slate-500">Demonstration clinic with fictional sample doctors. Do not enter real medical information.</p>
 
       <div className="mt-6 space-y-3">
+        {step === 1 && props.aiSuggestEnabled && (
+          <div className="rounded-xl border border-slate-200 bg-mist/60 p-4">
+            <p className="text-sm font-medium text-navy">Not sure which service fits?</p>
+            <p className="mt-1 text-xs text-slate-600">Describe your symptoms and we will suggest a specialty. AI suggestion, not medical advice. For emergencies, call your local emergency number.</p>
+            <textarea
+              className={`${input} mt-2`}
+              rows={2}
+              maxLength={500}
+              placeholder="e.g. persistent cough and mild fever for three days"
+              value={symptoms}
+              onChange={(e) => setSymptoms(e.target.value)}
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <button type="button" className={secondary} onClick={requestSuggestion} disabled={suggesting}>
+                {suggesting ? "Thinking..." : "Suggest a specialty"}
+              </button>
+              {suggestion && !suggestion.specialtyId && (
+                <span className="text-xs text-slate-600">{suggestion.reason || "No confident match — please pick below."}</span>
+              )}
+            </div>
+            {suggestion?.specialtyId && (() => {
+              const picked = props.specialties.find((s) => s.id === suggestion.specialtyId);
+              if (!picked) return null;
+              return (
+                <div className="mt-3 rounded-lg border border-teal/40 bg-white p-3 text-sm">
+                  <p className="font-medium text-navy">Suggested: {picked.name}</p>
+                  {suggestion.reason && <p className="mt-1 text-slate-600">{suggestion.reason}</p>}
+                  <button type="button" className={`${primary} mt-2`} onClick={acceptSuggestion}>Use this service</button>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         {step === 1 && props.specialties.map((s) => (
           <button key={s.id} className={`${card} ${s.id === specialtyId ? "border-teal bg-teal/5" : "border-slate-200"}`}
             onClick={() => { if (s.id !== specialtyId) { setDoctorId(""); setDate(""); setSlot(null); } setSpecialtyId(s.id); next(2); }}>
